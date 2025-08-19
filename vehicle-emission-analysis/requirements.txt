@@ -1,7 +1,8 @@
 --prefer-binary
-streamlit==1.33.0
-pandas==2.0.3
-numpy==1.24.3
-plotly==5.22.0
-openpyxl==3.1.2
+- pandas==2.2.2
+- numpy==1.26.4
+- scipy==1.13.0
++ pandas==2.0.3  # 改用稍旧但更轻量的版本
++ numpy==1.24.3
 # scipy==1.13.0  # 暂时禁用
+
