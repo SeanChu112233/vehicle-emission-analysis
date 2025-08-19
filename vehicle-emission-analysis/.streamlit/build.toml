@@ -1,2 +1,3 @@
 [builder]
-timeout = 600  # 延长至10分钟
+timeout = 900  # 延长构建超时到15分钟
+max_retries = 3  # 增加重试次数
