@@ -1,4 +1,4 @@
---prefer-binary
+--prefer-binary  # 这行必须放在第一行
 streamlit==1.33.0
 pandas==2.0.3
 numpy==1.24.3
