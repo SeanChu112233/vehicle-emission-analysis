@@ -1,0 +1,2 @@
+[builder]
+timeout = 600  # 延长至10分钟
