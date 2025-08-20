@@ -3,19 +3,6 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy.interpolate import griddata
-import os
-import sys
-from pathlib import Path
-
-# 依赖预检查（确保在Streamlit Cloud上正确安装）
-DEPS_LOCK = Path(".deps_installed")
-if not DEPS_LOCK.exists():
-    st.warning("正在安装依赖，这可能需要几分钟...")
-    exit_code = os.system("pip install --prefer-binary -r requirements.txt")
-    if exit_code != 0:
-        st.error("依赖安装失败！请检查requirements.txt文件")
-        st.stop()
-    DEPS_LOCK.touch()
 
 # 页面设置
 st.set_page_config(
@@ -75,14 +62,11 @@ def create_3d_surface(flow, temp, efficiency, pollutant_name):
         fill_value=0      # 缺失值填充为0
     )
     
-    # 创建自定义颜色映射
-    colors_flat = np.array([custom_colormap(val/100) for val in efficiency])
-    
-    # 创建3D曲面 - 修复颜色条设置
+    # 创建3D曲面
     fig = go.Figure(data=[
         go.Surface(
             x=xi, y=yi, z=zi,
-            colorscale='Viridis',  # 使用内置颜色尺度避免兼容性问题
+            colorscale='Viridis',  # 使用内置颜色尺度
             colorbar=dict(
                 title=dict(
                     text="转化效率(%)",
