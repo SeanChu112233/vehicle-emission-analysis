@@ -1,6 +1,6 @@
 streamlit==1.33.0
-pandas==1.5.3
-numpy==1.24.3
-plotly==5.15.0
+pandas==2.2.2
+numpy>=2.0.0  # 使用支持 Python 3.13 的新版本
+plotly==5.22.0
 openpyxl==3.1.2
-# 移除 scipy，使用 numpy 的简单插值替代
+scipy>=1.14.0  # 使用支持 Python 3.13 的版本
