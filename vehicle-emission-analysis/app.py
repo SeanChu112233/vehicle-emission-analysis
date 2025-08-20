@@ -1,233 +1,185 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "id": "577bee8f-c369-41c8-a738-1361a9f6cccb",
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "# 1. 预检查代码（必须放在最顶部）\n",
-    "import os\n",
-    "import sys\n",
-    "from pathlib import Path\n",
-    "\n",
-    "DEPS_LOCK = Path(\".deps_installed\")\n",
-    "if not DEPS_LOCK.exists():\n",
-    "    print(\"正在安装依赖...\", flush=True)\n",
-    "    exit_code = os.system(\"pip install --prefer-binary -r requirements.txt\")\n",
-    "    if exit_code != 0:\n",
-    "        print(\"依赖安装失败！\", file=sys.stderr)\n",
-    "        sys.exit(1)\n",
-    "    DEPS_LOCK.touch()\n",
-    "    \n",
-    "import streamlit as st\n",
-    "import pandas as pd\n",
-    "import numpy as np\n",
-    "import plotly.graph_objects as go\n",
-    "from scipy.interpolate import griddata\n",
-    "\n",
-    "# 页面设置\n",
-    "st.set_page_config(\n",
-    "    page_title=\"车辆排放分析系统\",\n",
-    "    page_icon=\"🚗\",\n",
-    "    layout=\"wide\"\n",
-    ")\n",
-    "\n",
-    "# 自定义颜色映射函数\n",
-    "def custom_colormap(efficiency):\n",
-    "    \"\"\"创建从深蓝到深红的渐变颜色映射\"\"\"\n",
-    "    if efficiency <= 0.5:\n",
-    "        # 0-50%: 深蓝到绿色\n",
-    "        r = int(0)\n",
-    "        g = int(255 * (efficiency / 0.5))\n",
-    "        b = int(255 * (1 - efficiency / 0.5))\n",
-    "    elif efficiency <= 0.7:\n",
-    "        # 50-70%: 绿色到橘红\n",
-    "        r = int(255 * ((efficiency - 0.5) / 0.2))\n",
-    "        g = 255\n",
-    "        b = 0\n",
-    "    else:\n",
-    "        # 70-100%: 橘红到深红\n",
-    "        r = 255\n",
-    "        g = int(255 * (1 - (efficiency - 0.7) / 0.3))\n",
-    "        b = 0\n",
-    "    return f\"rgb({r},{g},{b})\"\n",
-    "\n",
-    "# 计算转化效率\n",
-    "def calculate_efficiency(upstream, downstream):\n",
-    "    \"\"\"计算转化效率并限制在0-100%之间\"\"\"\n",
-    "    # 处理除零错误\n",
-    "    with np.errstate(divide='ignore', invalid='ignore'):\n",
-    "        efficiency = (1 - downstream / upstream) * 100\n",
-    "    \n",
-    "    # 处理无效值\n",
-    "    efficiency = np.nan_to_num(efficiency, nan=0.0)\n",
-    "    \n",
-    "    # 限制在0-100%之间\n",
-    "    efficiency = np.clip(efficiency, 0, 100)\n",
-    "    return efficiency\n",
-    "\n",
-    "# 创建三维曲面图\n",
-    "def create_3d_surface(flow, temp, efficiency, pollutant_name):\n",
-    "    \"\"\"创建可交互的三维曲面图\"\"\"\n",
-    "    # 创建网格\n",
-    "    xi = np.linspace(min(flow), max(flow), 100)\n",
-    "    yi = np.linspace(min(temp), max(temp), 100)\n",
-    "    xi, yi = np.meshgrid(xi, yi)\n",
-    "    \n",
-    "    # 插值处理（填充缺失值）\n",
-    "    zi = griddata(\n",
-    "        (flow, temp), \n",
-    "        efficiency, \n",
-    "        (xi, yi), \n",
-    "        method='cubic'\n",
-    "    )\n",
-    "    \n",
-    "    # 创建颜色映射\n",
-    "    colors = np.vectorize(custom_colormap)(zi/100)\n",
-    "    \n",
-    "    # 创建3D曲面\n",
-    "    fig = go.Figure(data=[\n",
-    "        go.Surface(\n",
-    "            x=xi, y=yi, z=zi,\n",
-    "            surfacecolor=colors,\n",
-    "            colorscale=None,\n",
-    "            showscale=False,\n",
-    "            opacity=0.9,\n",
-    "            hoverinfo=\"x+y+z+name\",\n",
-    "            name=pollutant_name\n",
-    "        )\n",
-    "    ])\n",
-    "    \n",
-    "    # 设置图表布局\n",
-    "    fig.update_layout(\n",
-    "        title=f\"{pollutant_name}转化效率分析\",\n",
-    "        scene=dict(\n",
-    "            xaxis_title='流量 (m³/h)',\n",
-    "            yaxis_title='催化器温度 (°C)',\n",
-    "            zaxis_title='转化效率 (%)',\n",
-    "            zaxis=dict(range=[0, 100]),\n",
-    "            camera=dict(\n",
-    "                eye=dict(x=1.5, y=1.5, z=1.5)\n",
-    "            )\n",
-    "        ),\n",
-    "        autosize=True,\n",
-    "        height=800,\n",
-    "        margin=dict(l=0, r=0, b=0, t=50)\n",
-    "    )\n",
-    "    \n",
-    "    return fig\n",
-    "\n",
-    "# 主程序\n",
-    "def main():\n",
-    "    st.title(\"🚗 车辆排放三维分析系统\")\n",
-    "    st.markdown(\"上传车辆10Hz排放数据Excel文件，分析CO、THC、NOx的转化效率\")\n",
-    "    \n",
-    "    # 文件上传\n",
-    "    uploaded_file = st.file_uploader(\n",
-    "        \"上传Excel数据文件\", \n",
-    "        type=[\"xlsx\", \"xls\"],\n",
-    "        help=\"请确保文件格式：第一行空白，第二行为列名\"\n",
-    "    )\n",
-    "    \n",
-    "    if uploaded_file:\n",
-    "        try:\n",
-    "            # 读取Excel文件（跳过第一行空白）\n",
-    "            df = pd.read_excel(uploaded_file, header=1)\n",
-    "            \n",
-    "            # 重命名列（根据描述的顺序）\n",
-    "            df.columns = [\n",
-    "                '时间', 'Lambda', '催化器温度', \n",
-    "                'CO原排', 'CO尾排', \n",
-    "                'THC原排', 'THC尾排',\n",
-    "                'NOx原排', 'NOx尾排', '流量'\n",
-    "            ]\n",
-    "            \n",
-    "            # 数据采样（10Hz数据量太大，降采样到1Hz）\n",
-    "            df = df.iloc[::10, :]\n",
-    "            \n",
-    "            # 显示数据预览\n",
-    "            with st.expander(\"数据预览（前10行）\"):\n",
-    "                st.dataframe(df.head(10))\n",
-    "                \n",
-    "            # 计算转化效率\n",
-    "            df['CO转化率'] = calculate_efficiency(df['CO原排'], df['CO尾排'])\n",
-    "            df['THC转化率'] = calculate_efficiency(df['THC原排'], df['THC尾排'])\n",
-    "            df['NOx转化率'] = calculate_efficiency(df['NOx原排'], df['NOx尾排'])\n",
-    "            \n",
-    "            # 创建三个污染物图表\n",
-    "            pollutants = {\n",
-    "                \"CO\": df['CO转化率'],\n",
-    "                \"THC\": df['THC转化率'],\n",
-    "                \"NOx\": df['NOx转化率']\n",
-    "            }\n",
-    "            \n",
-    "            # 使用选项卡展示三个图表\n",
-    "            tab1, tab2, tab3 = st.tabs([\"CO转化率\", \"THC转化率\", \"NOx转化率\"])\n",
-    "            \n",
-    "            with tab1:\n",
-    "                fig_co = create_3d_surface(\n",
-    "                    df['流量'], \n",
-    "                    df['催化器温度'], \n",
-    "                    df['CO转化率'],\n",
-    "                    \"CO\"\n",
-    "                )\n",
-    "                st.plotly_chart(fig_co, use_container_width=True)\n",
-    "                \n",
-    "            with tab2:\n",
-    "                fig_thc = create_3d_surface(\n",
-    "                    df['流量'], \n",
-    "                    df['催化器温度'], \n",
-    "                    df['THC转化率'],\n",
-    "                    \"THC\"\n",
-    "                )\n",
-    "                st.plotly_chart(fig_thc, use_container_width=True)\n",
-    "                \n",
-    "            with tab3:\n",
-    "                fig_nox = create_3d_surface(\n",
-    "                    df['流量'], \n",
-    "                    df['催化器温度'], \n",
-    "                    df['NOx转化率'],\n",
-    "                    \"NOx\"\n",
-    "                )\n",
-    "                st.plotly_chart(fig_nox, use_container_width=True)\n",
-    "                \n",
-    "            # 添加数据统计信息\n",
-    "            st.subheader(\"转化效率统计\")\n",
-    "            col1, col2, col3 = st.columns(3)\n",
-    "            col1.metric(\"CO平均转化率\", f\"{df['CO转化率'].mean():.1f}%\")\n",
-    "            col2.metric(\"THC平均转化率\", f\"{df['THC转化率'].mean():.1f}%\")\n",
-    "            col3.metric(\"NOx平均转化率\", f\"{df['NOx转化率'].mean():.1f}%\")\n",
-    "            \n",
-    "        except Exception as e:\n",
-    "            st.error(f\"数据处理错误: {str(e)}\")\n",
-    "            st.exception(e)\n",
-    "\n",
-    "if __name__ == \"__main__\":\n",
-    "    main()"
-   ]
-  }
- ],
- "metadata": {
-  "kernelspec": {
-   "display_name": "Python [conda env:base] *",
-   "language": "python",
-   "name": "conda-base-py"
-  },
-  "language_info": {
-   "codemirror_mode": {
-    "name": "ipython",
-    "version": 3
-   },
-   "file_extension": ".py",
-   "mimetype": "text/x-python",
-   "name": "python",
-   "nbconvert_exporter": "python",
-   "pygments_lexer": "ipython3",
-   "version": "3.12.7"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 5
-}
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from scipy.interpolate import griddata
+
+# 页面设置
+st.set_page_config(
+    page_title="车辆排放分析系统",
+    page_icon="🚗",
+    layout="wide"
+)
+
+# 自定义颜色映射函数
+def custom_colormap(efficiency):
+    """创建从深蓝到深红的渐变颜色映射"""
+    if efficiency <= 0.5:
+        # 0-50%: 深蓝到绿色
+        r = int(0)
+        g = int(255 * (efficiency / 0.5))
+        b = int(255 * (1 - efficiency / 0.5))
+    elif efficiency <= 0.7:
+        # 50-70%: 绿色到橘红
+        r = int(255 * ((efficiency - 0.5) / 0.2))
+        g = 255
+        b = 0
+    else:
+        # 70-100%: 橘红到深红
+        r = 255
+        g = int(255 * (1 - (efficiency - 0.7) / 0.3))
+        b = 0
+    return f"rgb({r},{g},{b})"
+
+# 计算转化效率
+def calculate_efficiency(upstream, downstream):
+    """计算转化效率并限制在0-100%之间"""
+    # 处理除零错误
+    with np.errstate(divide='ignore', invalid='ignore'):
+        efficiency = (1 - downstream / upstream) * 100
+    
+    # 处理无效值
+    efficiency = np.nan_to_num(efficiency, nan=0.0)
+    
+    # 限制在0-100%之间
+    efficiency = np.clip(efficiency, 0, 100)
+    return efficiency
+
+# 创建三维曲面图
+def create_3d_surface(flow, temp, efficiency, pollutant_name):
+    """创建可交互的三维曲面图"""
+    # 创建网格
+    xi = np.linspace(min(flow), max(flow), 100)
+    yi = np.linspace(min(temp), max(temp), 100)
+    xi, yi = np.meshgrid(xi, yi)
+    
+    # 插值处理（填充缺失值）
+    zi = griddata(
+        (flow, temp), 
+        efficiency, 
+        (xi, yi), 
+        method='cubic'
+    )
+    
+    # 创建颜色映射
+    colors = np.vectorize(custom_colormap)(zi/100)
+    
+    # 创建3D曲面
+    fig = go.Figure(data=[
+        go.Surface(
+            x=xi, y=yi, z=zi,
+            surfacecolor=colors,
+            colorscale=None,
+            showscale=False,
+            opacity=0.9,
+            hoverinfo="x+y+z+name",
+            name=pollutant_name
+        )
+    ])
+    
+    # 设置图表布局
+    fig.update_layout(
+        title=f"{pollutant_name}转化效率分析",
+        scene=dict(
+            xaxis_title='流量 (m³/h)',
+            yaxis_title='催化器温度 (°C)',
+            zaxis_title='转化效率 (%)',
+            zaxis=dict(range=[0, 100]),
+            camera=dict(
+                eye=dict(x=1.5, y=1.5, z=1.5)
+            )
+        ),
+        autosize=True,
+        height=800,
+        margin=dict(l=0, r=0, b=0, t=50)
+    )
+    
+    return fig
+
+# 主程序
+def main():
+    st.title("🚗 车辆排放三维分析系统")
+    st.markdown("上传车辆10Hz排放数据Excel文件，分析CO、THC、NOx的转化效率")
+    
+    # 文件上传
+    uploaded_file = st.file_uploader(
+        "上传Excel数据文件", 
+        type=["xlsx", "xls"],
+        help="请确保文件格式：第一行空白，第二行为列名"
+    )
+    
+    if uploaded_file:
+        try:
+            # 读取Excel文件（跳过第一行空白）
+            df = pd.read_excel(uploaded_file, header=1)
+            
+            # 重命名列（根据描述的顺序）
+            df.columns = [
+                '时间', 'Lambda', '催化器温度', 
+                'CO原排', 'CO尾排', 
+                'THC原排', 'THC尾排',
+                'NOx原排', 'NOx尾排', '流量'
+            ]
+            
+            # 数据采样（10Hz数据量太大，降采样到1Hz）
+            df = df.iloc[::10, :]
+            
+            # 显示数据预览
+            with st.expander("数据预览（前10行）"):
+                st.dataframe(df.head(10))
+                
+            # 计算转化效率
+            df['CO转化率'] = calculate_efficiency(df['CO原排'], df['CO尾排'])
+            df['THC转化率'] = calculate_efficiency(df['THC原排'], df['THC尾排'])
+            df['NOx转化率'] = calculate_efficiency(df['NOx原排'], df['NOx尾排'])
+            
+            # 创建三个污染物图表
+            pollutants = {
+                "CO": df['CO转化率'],
+                "THC": df['THC转化率'],
+                "NOx": df['NOx转化率']
+            }
+            
+            # 使用选项卡展示三个图表
+            tab1, tab2, tab3 = st.tabs(["CO转化率", "THC转化率", "NOx转化率"])
+            
+            with tab1:
+                fig_co = create_3d_surface(
+                    df['流量'], 
+                    df['催化器温度'], 
+                    df['CO转化率'],
+                    "CO"
+                )
+                st.plotly_chart(fig_co, use_container_width=True)
+                
+            with tab2:
+                fig_thc = create_3d_surface(
+                    df['流量'], 
+                    df['催化器温度'], 
+                    df['THC转化率'],
+                    "THC"
+                )
+                st.plotly_chart(fig_thc, use_container_width=True)
+                
+            with tab3:
+                fig_nox = create_3d_surface(
+                    df['流量'], 
+                    df['催化器温度'], 
+                    df['NOx转化率'],
+                    "NOx"
+                )
+                st.plotly_chart(fig_nox, use_container_width=True)
+                
+            # 添加数据统计信息
+            st.subheader("转化效率统计")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("CO平均转化率", f"{df['CO转化率'].mean():.1f}%")
+            col2.metric("THC平均转化率", f"{df['THC转化率'].mean():.1f}%")
+            col3.metric("NOx平均转化率", f"{df['NOx转化率'].mean():.1f}%")
+            
+        except Exception as e:
+            st.error(f"数据处理错误: {str(e)}")
+            st.exception(e)
+
+if __name__ == "__main__":
+    main()
