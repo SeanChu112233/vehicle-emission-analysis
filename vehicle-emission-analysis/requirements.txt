@@ -1,6 +1,6 @@
---prefer-binary  # 这行必须放在第一行
-streamlit==1.33.0
-pandas==2.0.3
+streamlit==1.22.0
+pandas==1.5.3
 numpy==1.24.3
-plotly==5.22.0
+plotly==5.13.1
+scipy==1.10.1
 openpyxl==3.1.2
