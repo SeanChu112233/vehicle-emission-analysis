@@ -3,194 +3,244 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from scipy.interpolate import griddata
-import openpyxl  # 用于读取Excel文件
+import os
+import sys
+from pathlib import Path
 
-# 设置页面标题和布局
-st.set_page_config(page_title="排放数据分析", layout="wide")
-st.title("车辆排放数据三维可视化")
+# 依赖预检查（确保在Streamlit Cloud上正确安装）
+DEPS_LOCK = Path(".deps_installed")
+if not DEPS_LOCK.exists():
+    st.warning("正在安装依赖，这可能需要几分钟...")
+    exit_code = os.system("pip install --prefer-binary -r requirements.txt")
+    if exit_code != 0:
+        st.error("依赖安装失败！请检查requirements.txt文件")
+        st.stop()
+    DEPS_LOCK.touch()
 
-# 添加说明
-st.info("""
-此应用可视化车辆排放数据，展示流量、温度和三种污染物(CO、THC、NOx)转化效率之间的关系。
-转化效率计算公式：(1 - 尾排/原排) × 100%，限制在0-100%范围内。
-""")
+# 页面设置
+st.set_page_config(
+    page_title="车辆排放分析系统",
+    page_icon="🚗",
+    layout="wide"
+)
 
-# 文件上传组件
-uploaded_file = st.file_uploader("上传Excel数据文件", type=["xlsx", "xls"])
+# 自定义颜色映射函数
+def custom_colormap(efficiency):
+    """创建从深蓝到深红的渐变颜色映射"""
+    efficiency = max(0, min(1, efficiency))  # 确保在0-1范围内
+    
+    if efficiency <= 0.5:
+        # 0-50%: 深蓝到绿色
+        r = 0
+        g = int(255 * (efficiency / 0.5))
+        b = int(255 * (1 - efficiency / 0.5))
+    elif efficiency <= 0.7:
+        # 50-70%: 绿色到橘红
+        r = int(255 * ((efficiency - 0.5) / 0.2))
+        g = 255
+        b = 0
+    else:
+        # 70-100%: 橘红到深红
+        r = 255
+        g = int(255 * (1 - (efficiency - 0.7) / 0.3))
+        b = 0
+    return f"rgb({r},{g},{b})"
 
-if uploaded_file is not None:
-    try:
-        # 读取Excel文件，跳过第一行空白，使用第二行作为列名
-        df = pd.read_excel(uploaded_file, skiprows=1, engine='openpyxl')
-        
-        # 检查数据列数
-        if len(df.columns) < 10:
-            st.error("数据文件列数不足，请确保文件包含所有必需的列")
-            st.stop()
-        
-        # 重命名列以便更容易访问
-        df.columns = ['时间', 'Lambda', '催化器温度', 'CO原排', 'CO尾排', 
-                     'THC原排', 'THC尾排', 'NOx原排', 'NOx尾排', '流量']
-        
-        st.success("数据加载成功！")
-        
-        # 显示数据基本信息
-        st.subheader("数据概览")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("数据点数", len(df))
-        col1.metric("时间范围", f"{df['时间'].min():.1f} - {df['时间'].max():.1f}秒")
-        col2.metric("流量范围", f"{df['流量'].min():.2f} - {df['流量'].max():.2f}")
-        col3.metric("温度范围", f"{df['催化器温度'].min():.2f} - {df['催化器温度'].max():.2f}")
-        
-        # 检查数据有效性
-        st.subheader("数据质量检查")
-        for col in ['CO原排', 'CO尾排', 'THC原排', 'THC尾排', 'NOx原排', 'NOx尾排']:
-            zero_count = (df[col] == 0).sum()
-            if zero_count > 0:
-                st.warning(f"列 '{col}' 中有 {zero_count} 个零值，可能会影响转化效率计算")
-        
-        # 计算转化效率
-        def calculate_conversion(original, tail):
-            # 避免除零错误
-            mask = (original > 0) & (tail >= 0)
-            conversion = np.zeros_like(original)
-            conversion[mask] = (1 - tail[mask]/original[mask]) * 100
-            
-            # 限制在0-100%范围内
-            conversion = np.where(conversion < 0, 0, conversion)
-            conversion = np.where(conversion > 100, 100, conversion)
-            return conversion
-        
-        # 添加进度条
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        status_text.text("计算CO转化效率...")
-        df['CO转化效率'] = calculate_conversion(df['CO原排'].values, df['CO尾排'].values)
-        progress_bar.progress(33)
-        
-        status_text.text("计算THC转化效率...")
-        df['THC转化效率'] = calculate_conversion(df['THC原排'].values, df['THC尾排'].values)
-        progress_bar.progress(66)
-        
-        status_text.text("计算NOx转化效率...")
-        df['NOx转化效率'] = calculate_conversion(df['NOx原排'].values, df['NOx尾排'].values)
-        progress_bar.progress(100)
-        
-        status_text.text("计算完成!")
-        
-        # 创建自定义颜色刻度
-        colorscale = [
-            [0.0, "darkblue"],    # 0% - 深蓝色
-            [0.5, "green"],       # 50% - 绿色
-            [0.7, "orange"],      # 70% - 橘红色
-            [0.9, "darkred"],     # 90% - 深红色
-            [1.0, "darkred"]      # 100% - 深红色
-        ]
-        
-        # 创建网格数据进行插值
-        def create_interpolated_data(x, y, z, grid_points=50):
-            # 过滤无效数据点
-            mask = ~(np.isnan(x) | np.isnan(y) | np.isnan(z))
-            x_filtered = x[mask]
-            y_filtered = y[mask]
-            z_filtered = z[mask]
-            
-            # 确保有足够的数据点进行插值
-            if len(x_filtered) < 10:
-                return None, None, None
-                
-            # 创建网格
-            xi = np.linspace(x_filtered.min(), x_filtered.max(), grid_points)
-            yi = np.linspace(y_filtered.min(), y_filtered.max(), grid_points)
-            xi, yi = np.meshgrid(xi, yi)
-            
-            try:
-                # 插值
-                zi = griddata((x_filtered, y_filtered), z_filtered, (xi, yi), method='linear')
-                return xi, yi, zi
-            except:
-                return None, None, None
-        
-        # 为每种污染物创建图表
-        pollutants = ['CO', 'THC', 'NOx']
-        
-        for pollutant in pollutants:
-            st.subheader(f"{pollutant}转化效率三维可视化")
-            
-            # 获取数据
-            x = df['流量'].values
-            y = df['催化器温度'].values
-            z = df[f'{pollutant}转化效率'].values
-            
-            # 创建插值数据
-            xi, yi, zi = create_interpolated_data(x, y, z)
-            
-            if xi is None:
-                st.error(f"无法为{pollutant}创建三维曲面，数据点不足或分布不均匀")
-                continue
-            
-            # 创建3D曲面图
-            fig = go.Figure(data=[go.Surface(
-                x=xi, 
-                y=yi, 
-                z=zi,
-                colorscale=colorscale,
-                colorbar=dict(title='转化效率 (%)', titleside='right'),
-                hovertemplate='<b>流量</b>: %{x:.2f}<br>' +
-                            '<b>温度</b>: %{y:.2f}<br>' +
-                            '<b>转化效率</b>: %{z:.2f}%<extra></extra>'
-            )])
-            
-            fig.update_layout(
-                title=f'{pollutant}转化效率 vs 流量 vs 温度',
-                scene=dict(
-                    xaxis_title='流量',
-                    yaxis_title='催化器温度',
-                    zaxis_title='转化效率 (%)',
-                    zaxis=dict(range=[0, 100])
+# 计算转化效率
+def calculate_efficiency(upstream, downstream):
+    """计算转化效率并限制在0-100%之间"""
+    # 处理除零错误和无效值
+    efficiency = np.zeros_like(upstream, dtype=float)
+    valid_mask = (upstream > 0) & (downstream >= 0)
+    
+    efficiency[valid_mask] = (1 - downstream[valid_mask] / upstream[valid_mask]) * 100
+    efficiency = np.clip(efficiency, 0, 100)
+    
+    return efficiency
+
+# 创建三维曲面图
+def create_3d_surface(flow, temp, efficiency, pollutant_name):
+    """创建可交互的三维曲面图"""
+    # 创建网格
+    xi = np.linspace(min(flow), max(flow), 50)
+    yi = np.linspace(min(temp), max(temp), 50)
+    xi, yi = np.meshgrid(xi, yi)
+    
+    # 插值处理（填充缺失值）
+    zi = griddata(
+        (flow, temp), 
+        efficiency, 
+        (xi, yi), 
+        method='linear',  # 使用线性插值更稳定
+        fill_value=0      # 缺失值填充为0
+    )
+    
+    # 创建自定义颜色映射
+    colors_flat = np.array([custom_colormap(val/100) for val in efficiency])
+    
+    # 创建3D曲面 - 修复颜色条设置
+    fig = go.Figure(data=[
+        go.Surface(
+            x=xi, y=yi, z=zi,
+            colorscale='Viridis',  # 使用内置颜色尺度避免兼容性问题
+            colorbar=dict(
+                title=dict(
+                    text="转化效率(%)",
+                    side="right"
                 ),
-                autosize=True,
-                height=600,
-                margin=dict(l=65, r=50, b=65, t=90)
+                thickness=15,
+                len=0.6
+            ),
+            opacity=0.8,
+            hoverinfo="x+y+z+text",
+            hovertext=[f"流量: {x:.2f}<br>温度: {y:.2f}<br>效率: {z:.2f}%" 
+                      for x, y, z in zip(xi.flatten(), yi.flatten(), zi.flatten())],
+            name=pollutant_name
+        )
+    ])
+    
+    # 设置图表布局
+    fig.update_layout(
+        title=f"{pollutant_name}转化效率分析",
+        scene=dict(
+            xaxis_title='流量 (m³/h)',
+            yaxis_title='催化器温度 (°C)',
+            zaxis_title='转化效率 (%)',
+            zaxis=dict(range=[0, 100]),
+            camera=dict(
+                eye=dict(x=1.5, y=1.5, z=1.5)
+            )
+        ),
+        autosize=True,
+        height=700,
+        margin=dict(l=0, r=0, b=0, t=50)
+    )
+    
+    return fig
+
+# 数据预处理函数
+def preprocess_data(df):
+    """预处理数据，处理缺失值和异常值"""
+    # 重命名列（根据描述的顺序）
+    df.columns = [
+        '时间', 'Lambda', '催化器温度', 
+        'CO原排', 'CO尾排', 
+        'THC原排', 'THC尾排',
+        'NOx原排', 'NOx尾排', '流量'
+    ]
+    
+    # 处理缺失值
+    df = df.fillna(method='ffill').fillna(method='bfill').fillna(0)
+    
+    # 处理异常值（负值设为0）
+    for col in ['CO原排', 'CO尾排', 'THC原排', 'THC尾排', 'NOx原排', 'NOx尾排']:
+        df[col] = df[col].clip(lower=0)
+    
+    return df
+
+# 主程序
+def main():
+    st.title("🚗 车辆排放三维分析系统")
+    st.markdown("上传车辆10Hz排放数据Excel文件，分析CO、THC、NOx的转化效率")
+    
+    # 文件上传
+    uploaded_file = st.file_uploader(
+        "上传Excel数据文件", 
+        type=["xlsx", "xls"],
+        help="请确保文件格式：第一行空白，第二行为列名"
+    )
+    
+    if uploaded_file:
+        try:
+            # 读取Excel文件（跳过第一行空白）
+            df = pd.read_excel(uploaded_file, header=1)
+            
+            # 数据预处理
+            df = preprocess_data(df)
+            
+            # 数据采样（10Hz数据量太大，降采样到1Hz）
+            df = df.iloc[::10, :].reset_index(drop=True)
+            
+            # 显示数据预览
+            with st.expander("数据预览（前10行）"):
+                st.dataframe(df.head(10))
+                
+            # 计算转化效率
+            df['CO转化率'] = calculate_efficiency(df['CO原排'], df['CO尾排'])
+            df['THC转化率'] = calculate_efficiency(df['THC原排'], df['THC尾排'])
+            df['NOx转化率'] = calculate_efficiency(df['NOx原排'], df['NOx尾排'])
+            
+            # 创建三个污染物图表
+            pollutants = {
+                "CO": df['CO转化率'],
+                "THC": df['THC转化率'],
+                "NOx": df['NOx转化率']
+            }
+            
+            # 使用选项卡展示三个图表
+            tab1, tab2, tab3 = st.tabs(["CO转化率", "THC转化率", "NOx转化率"])
+            
+            with tab1:
+                st.subheader("CO转化效率分析")
+                fig_co = create_3d_surface(
+                    df['流量'], 
+                    df['催化器温度'], 
+                    df['CO转化率'],
+                    "CO"
+                )
+                st.plotly_chart(fig_co, use_container_width=True)
+                
+                # 显示统计信息
+                col1, col2, col3 = st.columns(3)
+                col1.metric("平均转化率", f"{df['CO转化率'].mean():.1f}%")
+                col2.metric("最大转化率", f"{df['CO转化率'].max():.1f}%")
+                col3.metric("最小转化率", f"{df['CO转化率'].min():.1f}%")
+                
+            with tab2:
+                st.subheader("THC转化效率分析")
+                fig_thc = create_3d_surface(
+                    df['流量'], 
+                    df['催化器温度'], 
+                    df['THC转化率'],
+                    "THC"
+                )
+                st.plotly_chart(fig_thc, use_container_width=True)
+                
+                # 显示统计信息
+                col1, col2, col3 = st.columns(3)
+                col1.metric("平均转化率", f"{df['THC转化率'].mean():.1f}%")
+                col2.metric("最大转化率", f"{df['THC转化率'].max():.1f}%")
+                col3.metric("最小转化率", f"{df['THC转化率'].min():.1f}%")
+                
+            with tab3:
+                st.subheader("NOx转化效率分析")
+                fig_nox = create_3d_surface(
+                    df['流量'], 
+                    df['催化器温度'], 
+                    df['NOx转化率'],
+                    "NOx"
+                )
+                st.plotly_chart(fig_nox, use_container_width=True)
+                
+                # 显示统计信息
+                col1, col2, col3 = st.columns(3)
+                col1.metric("平均转化率", f"{df['NOx转化率'].mean():.1f}%")
+                col2.metric("最大转化率", f"{df['NOx转化率'].max():.1f}%")
+                col3.metric("最小转化率", f"{df['NOx转化率'].min():.1f}%")
+            
+            # 添加数据下载功能
+            st.subheader("数据导出")
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="下载处理后的CSV数据",
+                data=csv,
+                file_name="排放分析结果.csv",
+                mime="text/csv"
             )
             
-            # 显示图表
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # 显示统计信息
-            col1, col2, col3 = st.columns(3)
-            col1.metric(f"{pollutant}平均转化效率", f"{df[f'{pollutant}转化效率'].mean():.2f}%")
-            col2.metric(f"{pollutant}最大转化效率", f"{df[f'{pollutant}转化效率'].max():.2f}%")
-            col3.metric(f"{pollutant}最小转化效率", f"{df[f'{pollutant}转化效率'].min():.2f}%")
-        
-    except Exception as e:
-        st.error(f"处理数据时出错: {str(e)}")
-        st.info("请确保Excel文件格式正确：第一行为空白，第二行为列名，数据从第三行开始")
-else:
-    st.info("请上传Excel数据文件以开始分析。")
-    
-# 添加使用说明
-with st.expander("使用说明"):
-    st.markdown("""
-    ## 数据格式要求
-    - Excel文件第一行应为空白行
-    - 第二行包含列名：时间、Lambda、催化器温度、CO原排、CO尾排、THC原排、THC尾排、NOx原排、NOx尾排、流量
-    - 数据应从第三行开始
-    
-    ## 计算说明
-    - 转化效率计算公式：(1 - 尾排/原排) × 100%
-    - 转化效率限制在0-100%范围内
-    - 使用线性插值法填补缺失数据，创建连续曲面
-    
-    ## 颜色映射
-    - 0%: 深蓝色
-    - 50%: 绿色
-    - 70%: 橘红色
-    - 90%及以上: 深红色
-    
-    ## 交互功能
-    - 使用鼠标拖动可旋转三维图形
-    - 使用滚轮可缩放图形
-    - 点击图例可切换显示/隐藏数据系列
-    """)
+        except Exception as e:
+            st.error(f"数据处理错误: {str(e)}")
+            st.exception(e)
+
+if __name__ == "__main__":
+    main()
